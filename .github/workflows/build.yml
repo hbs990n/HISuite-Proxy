@@ -1,0 +1,36 @@
+name: Build HiSuite Proxy
+
+on:
+  push:
+    branches: [ master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup NuGet
+        uses: NuGet/setup-nuget@v2
+
+      - name: Restore packages
+        run: nuget restore "HiSuite Proxy.sln" -PackagesDirectory packages
+
+      - name: Build Release
+        run: msbuild "HiSuite Proxy.sln" /p:Configuration=Release /p:Platform="Any CPU" /m /v:m
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HiSuite-Proxy-Release
+          if-no-files-found: error
+          path: |
+            HiSuite Proxy/bin/Release/*.exe
+            HiSuite Proxy/bin/Release/*.dll
+            HiSuite Proxy/bin/Release/*.pfx
+            HiSuite Proxy/bin/Release/*.ico

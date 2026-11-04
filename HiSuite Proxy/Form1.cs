@@ -166,12 +166,16 @@ namespace HiSuite_Proxy
             if (reqeustURL.Contains("filelist.xml"))
             {
                 string basefirm = textBox1.Text, custfirm = textBox7.Text, preloadfirm = textBox4.Text;
-                basefirm = basefirm.Substring(basefirm.IndexOf("TDS"));
-                custfirm = custfirm.Substring(custfirm.IndexOf("TDS"));
-                preloadfirm = preloadfirm.Substring(preloadfirm.IndexOf("TDS"));
+                int tdsindex = basefirm.IndexOf("TDS");
+                basefirm = (tdsindex == -1) ? "" : basefirm.Substring(tdsindex);
+                tdsindex = custfirm.IndexOf("TDS");
+                custfirm = (tdsindex == -1) ? "" : custfirm.Substring(tdsindex);
+                tdsindex = preloadfirm.IndexOf("TDS");
+                preloadfirm = (tdsindex == -1) ? "" : preloadfirm.Substring(tdsindex);
 
-                string tempurl = reqeustURL.Substring(reqeustURL.IndexOf("TDS"));
-                if (_customData.LocalBase && tempurl.Contains(basefirm))
+                tdsindex = reqeustURL.IndexOf("TDS");
+                string tempurl = (tdsindex == -1) ? "" : reqeustURL.Substring(tdsindex);
+                if (_customData.LocalBase && basefirm.Length > 0 && tempurl.Contains(basefirm))
                 {
                     string response = await e.GetResponseBodyAsString();
                     int where = response.IndexOf("package=");
@@ -186,7 +190,7 @@ namespace HiSuite_Proxy
                         CopyFile(textBox2.Text, _customData.LocalBaseDir, response.Substring(where, finish - where), 0);
                     }
                 }
-                else if (_customData.LocalCust && tempurl.Contains(custfirm))
+                else if (_customData.LocalCust && custfirm.Length > 0 && tempurl.Contains(custfirm))
                 {
                     string response = await e.GetResponseBodyAsString();
                     int where = response.IndexOf("package=");
@@ -201,7 +205,7 @@ namespace HiSuite_Proxy
                         CopyFile(textBox6.Text, _customData.LocalCustDir, response.Substring(where, finish - where), 1);
                     }
                 }
-                else if (_customData.LocalPreload && tempurl.Contains(preloadfirm))
+                else if (_customData.LocalPreload && preloadfirm.Length > 0 && tempurl.Contains(preloadfirm))
                 {
                     string response = await e.GetResponseBodyAsString();
                     int where = response.IndexOf("package=");
@@ -247,6 +251,79 @@ namespace HiSuite_Proxy
             }
             
         }
+        // 离线包模式下 Packages Url 里填的是包名而非 CDN 地址，这里按版本号补出真实格式的 CDN 地址，
+        // 使 HiSuite 后续请求 filelist.xml 时能被本地伪造的清单接住，从而完全不走网络下载。
+        private string GetPackageURL(string packageOrUrl, int versionType)
+        {
+            if (packageOrUrl.Contains("/TDS/data/files"))
+                return packageOrUrl;
+            string version = GetURLVersion(packageOrUrl, versionType);
+            if (version == "Unknown")
+                return packageOrUrl;
+            return "http://update.dbankcdn.com/TDS/data/files/p3/s15/G5398/g1755/v" + version + "/f1/";
+        }
+
+        private static string ExtractVersionId(string body)
+        {
+            int where = body.LastIndexOf("\"versionId\"");
+            if (where == -1)
+                return "";
+            int valueStart = body.IndexOf('"', where + 11);
+            if (valueStart == -1)
+                return "";
+            int valueEnd = body.IndexOf('"', valueStart + 1);
+            if (valueEnd == -1)
+                return "";
+            return body.Substring(valueStart + 1, valueEnd - valueStart - 1).Trim();
+        }
+
+        private static string ReplaceVersionId(string body, string versionId)
+        {
+            int where = body.LastIndexOf("\"versionId\"");
+            if (where == -1)
+                return body;
+            int valueStart = body.IndexOf('"', where + 11);
+            if (valueStart == -1)
+                return body;
+            int valueEnd = body.IndexOf('"', valueStart + 1);
+            if (valueEnd == -1)
+                return body;
+            return body.Substring(0, valueStart + 1) + versionId + body.Substring(valueEnd);
+        }
+
+        // 取预存的完整 authorize 请求原文；优先使用程序目录下的 authfull.json（方便不重新编译就更换），
+        // 否则回退到内嵌资源。versionId 用 HiSuite 本次实际请求的版本号覆盖。
+        private string BuildFullAuthRequest(string simpleRequest)
+        {
+            string template = null;
+            string externalPath = Path.Combine(Application.StartupPath, "authfull.json");
+            if (File.Exists(externalPath))
+            {
+                template = File.ReadAllText(externalPath);
+            }
+            else
+            {
+                using (Stream resourceStream = typeof(Form1).Assembly.GetManifestResourceStream("HiSuite_Proxy.Resources.authfull.json"))
+                {
+                    if (resourceStream != null)
+                    {
+                        using (StreamReader reader = new StreamReader(resourceStream, Encoding.UTF8))
+                        {
+                            template = reader.ReadToEnd();
+                        }
+                    }
+                }
+            }
+            if (template == null || !template.Contains("deviceCertificate"))
+                return simpleRequest;
+            string requestedVersionId = ExtractVersionId(simpleRequest);
+            if (requestedVersionId.Length > 0)
+            {
+                template = ReplaceVersionId(template, requestedVersionId);
+            }
+            return template;
+        }
+
         private async Task Proxyserver_BeforeRequest(object sender, Titanium.Web.Proxy.EventArguments.SessionEventArgs e)
         {
             try
@@ -455,6 +532,12 @@ namespace HiSuite_Proxy
                         }
                         if (respons == "0")
                         {
+                            // HiSuite 重启后 deviceId/updateToken 为空，只会发送不含证书的精简请求。
+                            // 此处用预存的完整请求原文（含设备证书与 keyAttestation）替换，恢复完整授权流程。
+                            if (!updata.Contains("deviceCertificate"))
+                            {
+                                updata = BuildFullAuthRequest(updata);
+                            }
                             try
                             {
                                 respons = client.UploadString("https://query.hicloud.com:443/sp_ard_common/v1/authorize.action", updata);
@@ -540,7 +623,7 @@ namespace HiSuite_Proxy
                                             responsedata = responsedata.Replace("pointbase", "0");
 
                                         responsedata = responsedata.Replace("basetype", textBox8.Text);
-                                        responsedata = responsedata.Replace("VersionURL", textBox1.Text);
+                                        responsedata = responsedata.Replace("VersionURL", GetPackageURL(textBox1.Text, 0));
                                         responsedata = responsedata.Replace("Unknown1", textBox2.Text);
                                     }
                                 }*/
@@ -565,7 +648,7 @@ namespace HiSuite_Proxy
                                             responsedata = responsedata.Replace("pointbase", "0");
 
                                         responsedata = responsedata.Replace("basetype", textBox8.Text);
-                                        responsedata = responsedata.Replace("VersionURL", textBox1.Text);
+                                        responsedata = responsedata.Replace("VersionURL", GetPackageURL(textBox1.Text, 0));
                                         responsedata = responsedata.Replace("Unknown1", textBox2.Text);
                                     }
                                     else
@@ -593,7 +676,7 @@ namespace HiSuite_Proxy
                                             responsedata = responsedata.Replace("pointbase", "0");
 
                                         responsedata = responsedata.Replace("basetype", textBox8.Text);
-                                        responsedata = responsedata.Replace("VersionURL", textBox1.Text);
+                                        responsedata = responsedata.Replace("VersionURL", GetPackageURL(textBox1.Text, 0));
                                         responsedata = responsedata.Replace("Unknown1", textBox2.Text);
                                     }
                                     else
@@ -624,7 +707,7 @@ namespace HiSuite_Proxy
                                         }
                                         else
                                             responsedata = responsedata.Replace("pointpreload", "0");
-                                        responsedata = responsedata.Replace("VrsionURL", textBox4.Text);
+                                        responsedata = responsedata.Replace("VrsionURL", GetPackageURL(textBox4.Text, 2));
                                         responsedata = responsedata.Replace("Unknown2", textBox5.Text);
                                         responsedata = responsedata.Replace("hasreloadedpackage", "0");
                                     }
@@ -656,7 +739,7 @@ namespace HiSuite_Proxy
                                         }
                                         else
                                             responsedata = responsedata.Replace("pointcust", "0");
-                                        responsedata = responsedata.Replace("VrionURL", textBox7.Text);
+                                        responsedata = responsedata.Replace("VrionURL", GetPackageURL(textBox7.Text, 1));
                                         responsedata = responsedata.Replace("Unknown3", textBox6.Text);
                                         responsedata = responsedata.Replace("hascustpackage", "0");
                                     }
