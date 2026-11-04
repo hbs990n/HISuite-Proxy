@@ -255,7 +255,7 @@ namespace HiSuite_Proxy
         // 使 HiSuite 后续请求 filelist.xml 时能被本地伪造的清单接住，从而完全不走网络下载。
         private string GetPackageURL(string packageOrUrl, int versionType)
         {
-            if (packageOrUrl.Contains("/TDS/data/files"))
+            if (packageOrUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase))
                 return packageOrUrl;
             string version = GetURLVersion(packageOrUrl, versionType);
             if (version == "Unknown")
